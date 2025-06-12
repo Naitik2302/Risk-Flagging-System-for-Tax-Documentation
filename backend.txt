@@ -1,0 +1,143 @@
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+from sklearn.impute import SimpleImputer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, roc_auc_score
+import joblib
+import pickle
+
+# Generate sample data
+def generate_sample_data(num_samples=1000):
+    np.random.seed(42)
+    data = {
+        'reported_income': np.abs(np.random.normal(50000, 15000, num_samples)),
+        'third_party_income': np.abs(np.random.normal(52000, 14000, num_samples)),
+        'total_deductions': np.abs(np.random.normal(12000, 5000, num_samples)),
+        'last_year_income': np.abs(np.random.normal(48000, 14000, num_samples)),
+    }
+    df = pd.DataFrame(data)
+    
+    df['fraud_label'] = 0
+    fraud_indices = np.random.choice(num_samples, size=num_samples//20, replace=False)
+    df.loc[fraud_indices, 'fraud_label'] = 1
+    
+    df.loc[df['fraud_label'] == 1, 'reported_income'] *= 0.7  # Under-reporting
+    df.loc[df['fraud_label'] == 1, 'total_deductions'] *= 1.8  # Excessive deductions
+    
+    return df
+
+# Preprocessor
+class TaxDataPreprocessor:
+    def __init__(self):
+        self.scaler = StandardScaler()
+        self.imputer = SimpleImputer(strategy='median')
+        self.feature_columns = None
+        
+    def preprocess(self, raw_data):
+        data = raw_data.copy()
+        
+        data['income_discrepancy'] = data['reported_income'] - data['third_party_income']
+        data['deduction_ratio'] = data['total_deductions'] / (data['reported_income'] + 1e-6)
+        data['yearly_change'] = data['reported_income'] - data['last_year_income']
+        
+        if self.feature_columns is None:
+            self.feature_columns = [
+                'reported_income', 'third_party_income', 'total_deductions', 
+                'last_year_income', 'income_discrepancy', 'deduction_ratio', 
+                'yearly_change'
+            ]
+        
+        feature_data = data[self.feature_columns]
+        data_imputed = self.imputer.fit_transform(feature_data)
+        scaled_data = self.scaler.fit_transform(data_imputed)
+        
+        return scaled_data
+
+# Model Trainer
+class RiskModelTrainer:
+    def __init__(self):
+        self.model = RandomForestClassifier(
+            n_estimators=50,
+            max_depth=8,
+            class_weight='balanced',
+            random_state=42
+        )
+        
+    def train(self, X, y, test_size=0.2):
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=42
+        )
+        
+        self.model.fit(X_train, y_train)
+        return self.model
+    
+    def save_model(self, path):
+        joblib.dump(self.model, path)
+        
+    def load_model(self, path):
+        self.model = joblib.load(path)
+        return self.model
+
+# Risk Scoring System
+class RiskScoringSystem:
+    def __init__(self, model_path=None):
+        self.preprocessor = TaxDataPreprocessor()
+        self.model_trainer = RiskModelTrainer()
+        
+        if model_path:
+            self.model = self.model_trainer.load_model(model_path)
+        else:
+            self.model = None
+            
+    def calculate_risk_score(self, tax_document):
+        if not isinstance(tax_document, pd.DataFrame):
+            tax_document = pd.DataFrame(tax_document, index=[0])
+        
+        processed_data = self.preprocessor.preprocess(tax_document)
+        
+        if self.model:
+            risk_prob = self.model.predict_proba(processed_data)[0, 1]
+        else:
+            raise ValueError("Model not loaded or trained")
+            
+        rule_based_score = self._rule_based_checks(tax_document)
+        composite_score = 0.7 * risk_prob + 0.3 * rule_based_score
+        
+        return {
+            'model_score': float(risk_prob),
+            'rule_based_score': float(rule_based_score),
+            'composite_score': float(composite_score),
+            'risk_flag': bool(composite_score > 0.5)
+        }
+        
+    def _rule_based_checks(self, tax_doc):
+        score = 0
+        
+        if 'income_discrepancy' not in tax_doc:
+            tax_doc['income_discrepancy'] = tax_doc['reported_income'] - tax_doc['third_party_income']
+        if 'deduction_ratio' not in tax_doc:
+            tax_doc['deduction_ratio'] = tax_doc['total_deductions'] / (tax_doc['reported_income'] + 1e-6)
+        
+        if tax_doc['income_discrepancy'].iloc[0] < -10000:
+            score += 0.3
+        if tax_doc['deduction_ratio'].iloc[0] > 0.5:
+            score += 0.2
+        if tax_doc['reported_income'].iloc[0] < 0.7 * tax_doc['last_year_income'].iloc[0]:
+            score += 0.2
+            
+        return min(score, 1)
+
+# Train and save model
+sample_data = generate_sample_data()
+preprocessor = TaxDataPreprocessor()
+processed_data = preprocessor.preprocess(sample_data)
+
+trainer = RiskModelTrainer()
+model = trainer.train(processed_data, sample_data['fraud_label'])
+trainer.save_model('tax_risk_model.joblib')
+
+# Save preprocessor
+with open('preprocessor.pkl', 'wb') as f:
+    pickle.dump(preprocessor, f)

@@ -1,0 +1,96 @@
+from IPython.display import display, HTML, clear_output
+import ipywidgets as widgets
+
+# Load model and preprocessor
+model = joblib.load('tax_risk_model.joblib')
+with open('preprocessor.pkl', 'rb') as f:
+    preprocessor = pickle.load(f)
+
+# Initialize scoring system
+scoring_system = RiskScoringSystem(model_path='tax_risk_model.joblib')
+
+# Define widgets for input
+reported_income = widgets.FloatText(value=50000, description="Reported Income ($):")
+third_party_income = widgets.FloatText(value=52000, description="Third-Party Income ($):")
+total_deductions = widgets.FloatText(value=12000, description="Total Deductions ($):")
+last_year_income = widgets.FloatText(value=48000, description="Last Year Income ($):")
+
+submit_button = widgets.Button(description="Assess Risk")
+output = widgets.Output()
+
+# CSS styling for better UI
+style = """
+<style>
+.widget-label { font-weight: bold; color: #333; }
+.widget-text input { font-size: 14px; padding: 5px; }
+.widget-button { background: #4CAF50; color: white; border: none; padding: 8px 15px; }
+.widget-button:hover { background: #45a049; }
+.risk-high { color: red; font-weight: bold; }
+.risk-low { color: green; font-weight: bold; }
+</style>
+"""
+display(HTML(style))
+
+# Function to handle submission
+def on_submit_click(b):
+    with output:
+        clear_output()
+        
+        input_data = {
+            'reported_income': reported_income.value,
+            'third_party_income': third_party_income.value,
+            'total_deductions': total_deductions.value,
+            'last_year_income': last_year_income.value
+        }
+        
+        result = scoring_system.calculate_risk_score(input_data)
+        
+        # Display results
+        display(HTML("<h3>Risk Assessment Results</h3>"))
+        
+        if result['risk_flag']:
+            display(HTML('<p class="risk-high">🚨 High Risk Detected</p>'))
+        else:
+            display(HTML('<p class="risk-low">✅ Low Risk</p>'))
+        
+        display(HTML("<h4>Detailed Scores</h4>"))
+        display(HTML(f"""
+        <ul>
+            <li><strong>Model Score:</strong> {result['model_score']:.1%}</li>
+            <li><strong>Rule-Based Score:</strong> {result['rule_based_score']:.1%}</li>
+            <li><strong>Composite Risk Score:</strong> {result['composite_score']:.1%}</li>
+        </ul>
+        """))
+        
+        # Show risk factors
+        risk_factors = []
+        income_disc = input_data['reported_income'] - input_data['third_party_income']
+        if income_disc < -10000:
+            risk_factors.append(f"Large income discrepancy (${abs(income_disc):,.0f} under-reported)")
+        
+        deduc_ratio = input_data['total_deductions'] / (input_data['reported_income'] + 1e-6)
+        if deduc_ratio > 0.5:
+            risk_factors.append(f"High deduction ratio ({deduc_ratio:.0%} of income)")
+        
+        if input_data['reported_income'] < 0.7 * input_data['last_year_income']:
+            risk_factors.append("Significant income drop from previous year")
+        
+        if risk_factors:
+            display(HTML("<h4>Key Risk Factors</h4>"))
+            for factor in risk_factors:
+                display(HTML(f"<p>⚠️ {factor}</p>"))
+        else:
+            display(HTML("<p>No significant risk factors identified.</p>"))
+
+# Attach button click handler
+submit_button.on_click(on_submit_click)
+
+# Display the form
+display(HTML("<h2>Tax Risk Assessment System</h2>"))
+display(HTML("<p>Enter tax details to assess fraud risk:</p>"))
+display(reported_income)
+display(third_party_income)
+display(total_deductions)
+display(last_year_income)
+display(submit_button)
+display(output)
